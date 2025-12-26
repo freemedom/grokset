@@ -105,7 +105,6 @@ def analyze_engagement_metrics():
     """
     从tweets表的json字段中提取互动指标并统计分布
     提取的指标：likeCount, viewCount, bookmarkCount, quoteCount, replyCount, retweetCount
-    按照author_username是否为grok进行分类统计
     """
     if not os.path.exists(db_path):
         print(f"Error: Database file not found at {db_path}")
@@ -115,38 +114,23 @@ def analyze_engagement_metrics():
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # 查询所有推文的author_username和json字段
+        # 查询所有推文的json字段
         print("Loading tweets from database...")
-        cursor.execute("SELECT author_username, json FROM tweets")
+        cursor.execute("SELECT json FROM tweets")
         rows = cursor.fetchall()
         
         # 定义要提取的指标
         metrics = ['likeCount', 'viewCount', 'bookmarkCount', 'quoteCount', 'replyCount', 'retweetCount']
-        
-        # 按作者类型分类存储数据：grok, users, total
-        metric_data = {
-            'grok': {metric: [] for metric in metrics},
-            'users': {metric: [] for metric in metrics},
-            'total': {metric: [] for metric in metrics}
-        }
+        metric_data = {metric: [] for metric in metrics}
         
         # 统计解析成功和失败的数量
         success_count = 0
         error_count = 0
-        grok_tweet_count = 0
-        user_tweet_count = 0
         
         print(f"Processing {len(rows)} tweets...")
-        for i, (author_username, json_str) in enumerate(rows):
+        for i, (json_str,) in enumerate(rows):
             if (i + 1) % 10000 == 0:
                 print(f"  Processed {i + 1}/{len(rows)} tweets...")
-            
-            is_grok = (author_username and author_username.lower() == 'grok')
-            
-            if is_grok:
-                grok_tweet_count += 1
-            else:
-                user_tweet_count += 1
             
             try:
                 tweet_data = json.loads(json_str)
@@ -156,92 +140,90 @@ def analyze_engagement_metrics():
                     if value is None:
                         value = 0
                     elif isinstance(value, (int, float)):
-                        value = int(value)
+                        metric_data[metric].append(int(value))
                     else:
-                        value = 0
-                    
-                    # 添加到对应的分类
-                    if is_grok:
-                        metric_data['grok'][metric].append(value)
-                    else:
-                        metric_data['users'][metric].append(value)
-                    metric_data['total'][metric].append(value)
-                
+                        metric_data[metric].append(0)
                 success_count += 1
             except (json.JSONDecodeError, KeyError, TypeError) as e:
                 error_count += 1
                 # 如果解析失败，为所有指标添加0
                 for metric in metrics:
-                    if is_grok:
-                        metric_data['grok'][metric].append(0)
-                    else:
-                        metric_data['users'][metric].append(0)
-                    metric_data['total'][metric].append(0)
+                    metric_data[metric].append(0)
         
         print(f"\nJSON parsing: {success_count} successful, {error_count} errors")
-        print(f"Grok tweets: {grok_tweet_count:,}, User tweets: {user_tweet_count:,}")
         
         # 统计每个指标的分布
         print(f"\n=== Engagement Metrics Distribution ===")
         
-        # 定义统计函数
-        def calculate_stats(values, label):
-            """计算并返回统计信息"""
+        for metric in metrics:
+            values = metric_data[metric]
             if not values:
-                return None
+                print(f"\n{metric}: No data")
+                continue
             
+            # 过滤掉0值（用于某些统计）
             non_zero_values = [v for v in values if v > 0]
             
-            stats = {
-                'count': len(values),
-                'min': min(values),
-                'max': max(values),
-                'mean': statistics.mean(values),
-                'min_non_zero': min(non_zero_values) if non_zero_values else 0,
-                'mean_non_zero': statistics.mean(non_zero_values) if non_zero_values else 0
-            }
-            return stats
-        
-        for metric in metrics:
-            print(f"\n{'='*60}")
-            print(f"{metric}:")
-            print(f"{'='*60}")
+            # 基本统计
+            total = len(values)
+            zeros = values.count(0)
+            non_zeros = len(non_zero_values)
             
-            # 统计三个分类
-            categories = [
-                ('Grok Tweets', 'grok'),
-                ('User Tweets', 'users'),
-                ('Total (All)', 'total')
-            ]
-            
-            for category_name, category_key in categories:
-                values = metric_data[category_key][metric]
-                stats = calculate_stats(values, category_name)
+            if total > 0:
+                print(f"\n{metric}:")
+                print(f"  Total tweets: {total:,}")
+                print(f"  Zero values: {zeros:,} ({zeros/total*100:.2f}%)")
+                print(f"  Non-zero values: {non_zeros:,} ({non_zeros/total*100:.2f}%)")
                 
-                if stats:
-                    print(f"\n{category_name}:")
-                    print(f"  Count: {stats['count']:,}")
-                    print(f"  Min: {stats['min']:,}")
-                    print(f"  Max: {stats['max']:,}")
-                    print(f"  Mean: {stats['mean']:.2f}")
-                    if stats['min_non_zero'] > 0:
-                        print(f"  Min (non-zero): {stats['min_non_zero']:,}")
-                        print(f"  Mean (non-zero): {stats['mean_non_zero']:.2f}")
+                if non_zero_values:
+                    print(f"  Min (non-zero): {min(non_zero_values):,}")
+                    print(f"  Max: {max(values):,}")
+                    print(f"  Mean (all): {statistics.mean(values):.2f}")
+                    print(f"  Mean (non-zero): {statistics.mean(non_zero_values):.2f}")
+                    print(f"  Median (all): {statistics.median(values):.2f}")
+                    print(f"  Median (non-zero): {statistics.median(non_zero_values):.2f}")
+                    
+                    # 分位数
+                    sorted_values = sorted(values)
+                    print(f"  25th percentile: {sorted_values[int(len(sorted_values)*0.25)]:,}")
+                    print(f"  75th percentile: {sorted_values[int(len(sorted_values)*0.75)]:,}")
+                    print(f"  90th percentile: {sorted_values[int(len(sorted_values)*0.90)]:,}")
+                    print(f"  95th percentile: {sorted_values[int(len(sorted_values)*0.95)]:,}")
+                    print(f"  99th percentile: {sorted_values[int(len(sorted_values)*0.99)]:,}")
+                    
+                    # 分桶统计
+                    print(f"  Distribution buckets:")
+                    buckets = [
+                        (0, 0, "= 0"),
+                        (1, 10, "1-10"),
+                        (11, 100, "11-100"),
+                        (101, 1000, "101-1K"),
+                        (1001, 10000, "1K-10K"),
+                        (10001, 100000, "10K-100K"),
+                        (100001, float('inf'), "> 100K")
+                    ]
+                    
+                    for min_val, max_val, label in buckets:
+                        if max_val == float('inf'):
+                            count = sum(1 for v in values if v > min_val)
+                        else:
+                            count = sum(1 for v in values if min_val <= v <= max_val)
+                        percentage = count / total * 100
+                        print(f"    {label:12s}: {count:6,} ({percentage:5.2f}%)")
                 else:
-                    print(f"\n{category_name}: No data")
+                    print(f"  All values are zero")
         
         # 保存详细数据到CSV
         output_metrics_csv = 'engagement_metrics_distribution.csv'
-        print(f"\n\nSaving detailed statistics to {output_metrics_csv}...")
+        print(f"\nSaving detailed statistics to {output_metrics_csv}...")
         
         with open(output_metrics_csv, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(['author_type', 'metric', 'value'])
+            writer.writerow(['metric', 'value'])
             
-            for category_key, category_name in [('grok', 'grok'), ('users', 'users'), ('total', 'total')]:
-                for metric in metrics:
-                    for value in metric_data[category_key][metric]:
-                        writer.writerow([category_name, metric, value])
+            for metric in metrics:
+                for value in metric_data[metric]:
+                    writer.writerow([metric, value])
         
         print(f"Successfully saved engagement metrics to {output_metrics_csv}")
         
